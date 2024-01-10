@@ -1,5 +1,5 @@
-./.env
-./assistant.json
-./knowledge.pdf
-./test.py
-./test2.py
+.env
+assistant.json
+knowledge.pdf
+test.py
+test2.py
