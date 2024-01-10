@@ -10,12 +10,20 @@ import time
 import json
 import pynamodb
 from pynamodb.models import Model
+import threading
+import queue
 
 
 OPENAI_API_KEY = config('OPENAI_API_KEY')
 WHATSAPP_TOKEN = config('WHATSAPP_PERMANENT_ACCESS_TOKEN')
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
+res_q = queue.Queue()
+res_id_list = []
+
+
+
+
 
 
 class User(Model):
@@ -66,16 +74,13 @@ def send_msg(msg, number):
     response = requests.post(
         'https://graph.facebook.com/v18.0/220890917766697/messages', headers=headers, json=json_data)
     print("\nResponse object\n", response.text)
-
-
-@app.route('/webhooks', methods=['POST', 'GET'])
-def webhook():
-    print("\nRequest object\n",request)
-    res = request.get_json()
-    print("\nPayload\n",res)
-
+    
+    
+def handler():
     try:
-        if res['entry'][0]['changes'][0]['value']['messages'][0]['id']:
+        while True:
+            res = res_q.get()
+            
             user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
             client.beta.threads.messages.create(thread_id=thread.id,
                                                 role="user",
@@ -83,11 +88,15 @@ def webhook():
             run = client.beta.threads.runs.create(thread_id=thread.id,
                                                   assistant_id=assistant_id)
             print("Run started with ID:", run.id)
-            print("Calling check_run_status")
+            # print("Calling check_run_status")
             start_time = time.time()
-            print("In run status check, with start time:", start_time)
+            # print("In run status check, with start time:", start_time)
             run_status = client.beta.threads.runs.retrieve(thread_id=thread.id,
                                                            run_id=run.id)
+            
+            send_msg("Please wait while I process your request.",
+                     res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+            
             while time.time() - start_time < 120:
                 run_status = client.beta.threads.runs.retrieve(thread_id=thread.id,
                                                                run_id=run.id)
@@ -118,7 +127,49 @@ def webhook():
             User(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'], incoming_message=user_input, reply=message_content.value).save()
     except:
         pass
+
+
+my_thread = threading.Thread(target=handler)
+my_thread.daemon = True
+my_thread.start()
+
+@app.route('/webhooks', methods=['POST', 'GET'])
+def webhook():
+    print("\nRequest object\n",request)
+    res = request.get_json()
+    print("\nPayload\n",res)
+    try:
+        if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list:
+            # my_thread = threading.Thread(target=handler, args=(res,))
+            # my_thread.start()
+            res_id_list.append(res['entry'][0]['changes'][0]['value']['messages'][0]['id'])
+            res_q.put(res)
+            print("\nRes Queue\n",res_q)
+            # print the queue
+            for i in list(res_q.queue):
+                print(i)
+            print("\nRes id list\n",res_id_list)
+            
+    except KeyError:
+        print("Key error")
+        pass
     return '200 OK HTTPS.'
+# def webhook():
+#     print("\nRequest object\n",request)
+#     res = request.get_json()
+#     print("\nPayload\n",res)
+#     try:
+#         if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list:
+#             my_thread = threading.Thread(target=handler, args=(res,))
+#             my_thread.start()
+#     except KeyError:
+#         pass
+#     return '200 OK HTTPS.'
+        
+        
+    # res_list.append(res)
+    # print("\nRes list\n",res_list)
+    
 
 
 if __name__ == "__main__":
