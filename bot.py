@@ -21,12 +21,7 @@ AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
 res_q = queue.Queue()
 res_id_list = []
 
-
-
-
-
-
-class User(Model):
+class User_data(Model):
     class Meta:
         table_name = 'User_data_IML_DRP'
         region = 'us-east-1'
@@ -36,6 +31,14 @@ class User(Model):
     message_id = pynamodb.attributes.UnicodeAttribute(hash_key=True) ## hash key = True means this is the primary key
     incoming_message = pynamodb.attributes.UnicodeAttribute()
     reply = pynamodb.attributes.UnicodeAttribute()
+class User_threads(Model):
+    class Meta:
+        table_name = 'thread_data_IML_DRP'
+        region = 'us-east-1'
+        aws_access_key_id=AWS_ACCESS_KEY_ID
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+    phone_number = pynamodb.attributes.UnicodeAttribute(hash_key=True)
+    thread_ID = pynamodb.attributes.UnicodeAttribute()
 
 
 
@@ -48,13 +51,6 @@ app = Flask(__name__)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 print("Using Assistant:", assistant_id)
-
-thread = client.beta.threads.create()
-print("New conversation started with thread ID:", thread.id)
-
-@app.route('/')
-def index():
-    return '200 OK HTTPS.'
 
 def send_msg(msg, number):
     # headers for the response used for API authentication. The token is the permanent access token for the WhatsApp Cloud API
@@ -77,56 +73,64 @@ def send_msg(msg, number):
     
     
 def handler():
-    try:
-        while True:
-            res = res_q.get()
+    # try:
+    while True:
+        res = res_q.get()
+        print("Got a request from the queue")
+        send_msg("Please wait while I process your request.",
+                    res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+        
+        try: 
+            thread_id_client = User_threads.get(res['entry'][0]['changes'][0]['value']['messages'][0]['from']).thread_ID
+            print(f"Thread ID: {thread_id_client} retrieved for {res['entry'][0]['changes'][0]['value']['messages'][0]['from']}")
+        except User_threads.DoesNotExist:
+            thread_id_client = client.beta.threads.create().id
+            User_threads(phone_number=res['entry'][0]['changes'][0]['value']['messages'][0]['from'], thread_ID=thread_id_client).save()
+            print(f"Thread ID: {thread_id_client} created for {res['entry'][0]['changes'][0]['value']['messages'][0]['from']}")
             
-            user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
-            client.beta.threads.messages.create(thread_id=thread.id,
-                                                role="user",
-                                                content=user_input)
-            run = client.beta.threads.runs.create(thread_id=thread.id,
-                                                  assistant_id=assistant_id)
-            print("Run started with ID:", run.id)
-            # print("Calling check_run_status")
-            start_time = time.time()
-            # print("In run status check, with start time:", start_time)
-            run_status = client.beta.threads.runs.retrieve(thread_id=thread.id,
-                                                           run_id=run.id)
-            
-            send_msg("Please wait while I process your request.",
-                     res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-            
-            while time.time() - start_time < 120:
-                run_status = client.beta.threads.runs.retrieve(thread_id=thread.id,
-                                                               run_id=run.id)
-                print("Checking run status:", run_status.status)
+        
+        user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
+        
+        client.beta.threads.messages.create(thread_id=thread_id_client,
+                                            role="user",
+                                            content=user_input)
+        run = client.beta.threads.runs.create(thread_id=thread_id_client,
+                                                assistant_id=assistant_id)
+        print("Run started with ID:", run.id)
+        # print("Calling check_run_status")
+        start_time = time.time()
+        # print("In run status check, with start time:", start_time)
+        run_status = client.beta.threads.runs.retrieve(thread_id=thread_id_client,
+                                                        run_id=run.id)
+        
+        while time.time() - start_time < 120:
+            run_status = client.beta.threads.runs.retrieve(thread_id=thread_id_client,
+                                                            run_id=run.id)
+            print("Checking run status:", run_status.status)
 
-                if run_status.status == 'completed':
-                    messages = client.beta.threads.messages.list(
-                        thread_id=thread.id)
-                    message_content = messages.data[0].content[0].text
-                    # Remove annotations
-                    annotations = message_content.annotations
-                    for annotation in annotations:
-                        message_content.value = message_content.value.replace(
-                            annotation.text, '')
-                        
-                    print("Run completed, returning response to ",
-                          res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-                    print("Response:", message_content.value)
-                    send_msg(
-                        message_content.value, res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-                    break
-                time.sleep(1)
-            if run_status.status != 'completed':
-                print("Run timed out")
-                send_msg("Sorry, I'm having trouble understanding you. Please try again.",
-                         res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-                
-            User(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'], incoming_message=user_input, reply=message_content.value).save()
-    except:
-        pass
+            if run_status.status == 'completed':
+                messages = client.beta.threads.messages.list(
+                    thread_id=thread_id_client)
+                message_content = messages.data[0].content[0].text
+                # Remove annotations
+                annotations = message_content.annotations
+                for annotation in annotations:
+                    message_content.value = message_content.value.replace(
+                        annotation.text, '')
+                    
+                print("Run completed, returning response to ",
+                        res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+                print("Response:", message_content.value)
+                send_msg(
+                    message_content.value, res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+                break
+            time.sleep(1)
+        if run_status.status != 'completed':
+            print("Run timed out")
+            send_msg("Sorry, I'm having trouble understanding you. Please try again.",
+                        res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+            
+        User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'], incoming_message=user_input, reply=message_content.value).save()
 
 
 my_thread = threading.Thread(target=handler)
@@ -137,11 +141,11 @@ my_thread.start()
 def webhook():
     print("\nRequest object\n",request)
     res = request.get_json()
-    print("\nPayload\n",res)
     try:
-        if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list:
-            # my_thread = threading.Thread(target=handler, args=(res,))
-            # my_thread.start()
+        if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list and time.time() - int(res['entry'][0]['changes'][0]['value']['messages'][0]['timestamp'])  < 100:
+            print("\nCurrent time:", time.time())
+            print("\nMessage time:", int(res['entry'][0]['changes'][0]['value']['messages'][0]['timestamp']))
+            print("\nPayload\n",res)
             res_id_list.append(res['entry'][0]['changes'][0]['value']['messages'][0]['id'])
             res_q.put(res)
             print("\nRes Queue\n",res_q)
@@ -154,22 +158,6 @@ def webhook():
         print("Key error")
         pass
     return '200 OK HTTPS.'
-# def webhook():
-#     print("\nRequest object\n",request)
-#     res = request.get_json()
-#     print("\nPayload\n",res)
-#     try:
-#         if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list:
-#             my_thread = threading.Thread(target=handler, args=(res,))
-#             my_thread.start()
-#     except KeyError:
-#         pass
-#     return '200 OK HTTPS.'
-        
-        
-    # res_list.append(res)
-    # print("\nRes list\n",res_list)
-    
 
 
 if __name__ == "__main__":
