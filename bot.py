@@ -8,6 +8,8 @@ import pynamodb
 from pynamodb.models import Model
 import threading
 import queue
+from waitress import serve
+
 
 OPENAI_API_KEY = config('OPENAI_API_KEY')
 WHATSAPP_TOKEN = config('WHATSAPP_PERMANENT_ACCESS_TOKEN')
@@ -63,61 +65,67 @@ def send_msg(msg, number):
         'https://graph.facebook.com/v18.0/220890917766697/messages', headers=headers, json=json_data)
     print("\nResponse object\n", response.text)
 
+def handle_thread_id(phone_number):
+    try:
+        thread_id = User_threads.get(phone_number).thread_ID
+        print(f"Thread ID: {thread_id} retrieved for {phone_number}")
+        return thread_id
+    except User_threads.DoesNotExist:
+        thread_id = client.beta.threads.create().id
+        User_threads(phone_number=phone_number, thread_ID=thread_id).save()
+        print(f"Thread ID: {thread_id} created for {phone_number}")
+        return thread_id
+
+def process_user_input(thread_id_client, user_input):
+    client.beta.threads.messages.create(thread_id=thread_id_client,
+                                        role="user",
+                                        content=user_input)
+    run = client.beta.threads.runs.create(thread_id=thread_id_client,
+                                          assistant_id=assistant_id)
+    print("Run started with ID:", run.id)
+    return run
+
+def get_run_status(thread_id_client, run_id):
+    run_status = client.beta.threads.runs.retrieve(thread_id=thread_id_client,
+                                                   run_id=run_id)
+    print("Checking run status:", run_status.status)
+    return run_status
+
+def clean_message_content(message_content):
+    annotations = message_content.annotations
+    for annotation in annotations:
+        message_content.value = message_content.value.replace(annotation.text, '')
+    return message_content.value
+
 def handler():
     while True:
         res = res_q.get()
-        send_msg("Please wait while I process your request.",
-                 res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+        sender_phone = res['entry'][0]['changes'][0]['value']['messages'][0]['from']
+        send_msg("Please wait while I process your request.", sender_phone)
 
-        try:
-            thread_id_client = User_threads.get(
-                res['entry'][0]['changes'][0]['value']['messages'][0]['from']).thread_ID
-            print(
-                f"Thread ID: {thread_id_client} retrieved for {res['entry'][0]['changes'][0]['value']['messages'][0]['from']}")
-        except User_threads.DoesNotExist:
-            thread_id_client = client.beta.threads.create().id
-            User_threads(phone_number=res['entry'][0]['changes'][0]['value']
-                         ['messages'][0]['from'], thread_ID=thread_id_client).save()
-            print(f"Thread ID: {thread_id_client} created for {res['entry'][0]['changes'][0]['value']['messages'][0]['from']}")
-
+        thread_id_client = handle_thread_id(sender_phone)
         user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
-        client.beta.threads.messages.create(thread_id=thread_id_client,
-                                            role="user",
-                                            content=user_input)
-        run = client.beta.threads.runs.create(thread_id=thread_id_client,
-                                              assistant_id=assistant_id)
-        print("Run started with ID:", run.id)
-        start_time = time.time()
-        run_status = client.beta.threads.runs.retrieve(thread_id=thread_id_client,
-                                                       run_id=run.id)
+        run = process_user_input(thread_id_client, user_input)
 
+        start_time = time.time()
         while time.time() - start_time < 120:
-            run_status = client.beta.threads.runs.retrieve(thread_id=thread_id_client,
-                                                           run_id=run.id)
-            print("Checking run status:", run_status.status)
+            run_status = get_run_status(thread_id_client, run.id)
             if run_status.status == 'completed':
-                messages = client.beta.threads.messages.list(
-                    thread_id=thread_id_client)
-                message_content = messages.data[0].content[0].text
-                # Remove annotations
-                annotations = message_content.annotations
-                for annotation in annotations:
-                    message_content.value = message_content.value.replace(
-                        annotation.text, '')
-                print("Run completed, returning response to ",
-                      res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-                print("Response:", message_content.value)
-                send_msg(
-                    message_content.value, res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
+                messages = client.beta.threads.messages.list(thread_id=thread_id_client)
+                message_content = clean_message_content(messages.data[0].content[0].text)
+                print("Run completed, returning response to ", sender_phone)
+                print("Response:", message_content)
+                send_msg(message_content, sender_phone)
                 break
             time.sleep(1)
+
         if run_status.status != 'completed':
             print("Run timed out")
-            send_msg("Sorry, I'm having trouble understanding you. Please try again.",
-                     res['entry'][0]['changes'][0]['value']['messages'][0]['from'])
-        # add to database
-        User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]
-                  ['id'], incoming_message=user_input, reply=message_content.value).save()
+            send_msg("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
+        
+        User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'],
+                  incoming_message=user_input, reply=message_content).save()
+
 
 my_thread = threading.Thread(target=handler)
 my_thread.daemon = True
@@ -127,12 +135,15 @@ my_thread.start()
 def webhook():
     print("\nRequest object\n", request)
     res = request.get_json()
+
+    print("\nPayload\n", res)
     try:
-        if res['entry'][0]['changes'][0]['value']['messages'][0]['type'] == 'text' and res['entry'][0]['changes'][0]['value']['messages'][0]['id'] not in res_id_list and time.time() - int(res['entry'][0]['changes'][0]['value']['messages'][0]['timestamp']) < 100:
+        message = res['entry'][0]['changes'][0]['value']['messages'][0]
+        msg_type, msg_id, msg_timestamp = message['type'], message['id'], int(message['timestamp'])
+        if msg_type == 'text' and msg_id not in res_id_list and time.time() - msg_timestamp < 100:
             print("\nCurrent time:", time.time())
             print("\nMessage time:", int(
                 res['entry'][0]['changes'][0]['value']['messages'][0]['timestamp']))
-            print("\nPayload\n", res)
             res_id_list.append(res['entry'][0]['changes']
                                [0]['value']['messages'][0]['id'])
             res_q.put(res)
@@ -148,7 +159,8 @@ def webhook():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5002)
+    # app.run(debug=True, port=5002)
+    serve(app, host="0.0.0.0", port=5002)
 
 
 # the messages received from the user at the webhook endpoint have the following format:
