@@ -97,11 +97,25 @@ def clean_message_content(message_content):
         message_content.value = message_content.value.replace(annotation.text, '')
     return message_content.value
 
+
+def send_msg_with_retry(message, sender_phone, max_retries=8):
+    for attempt in range(1, max_retries + 1):
+        try:
+            send_msg(message, sender_phone)
+            break  # If successful, exit the loop
+        except requests.exceptions.ConnectionError as e:
+            print(f"Retry attempt {attempt}/{max_retries} - Connection error: {e}")
+            time.sleep(5)  # Wait for a few seconds before retrying
+    else:
+        print("Max retries exceeded. Unable to send the message.")
+
 def handler():
     while True:
+        # print("In handler ")
         res = res_q.get()
+        # print("Got request ")
         sender_phone = res['entry'][0]['changes'][0]['value']['messages'][0]['from']
-        send_msg("Please wait while I process your request.", sender_phone)
+        send_msg_with_retry("Please wait while I process your request.", sender_phone)
 
         thread_id_client = handle_thread_id(sender_phone)
         user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
@@ -115,13 +129,13 @@ def handler():
                 message_content = clean_message_content(messages.data[0].content[0].text)
                 print("Run completed, returning response to ", sender_phone)
                 print("Response:", message_content)
-                send_msg(message_content, sender_phone)
+                send_msg_with_retry(message_content, sender_phone)
                 break
             time.sleep(1)
 
         if run_status.status != 'completed':
             print("Run timed out")
-            send_msg("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
+            send_msg_with_retry("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
         
         User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'],
                   incoming_message=user_input, reply=message_content).save()
