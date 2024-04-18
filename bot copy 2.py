@@ -32,14 +32,22 @@ vectorizer = load('./vectorizer.joblib')
 
 class User_data(Model):
     class Meta:
-        table_name = "thread_less_data"
-        region = "us-east-1"
-        aws_access_key_id = "AKIA47CR2BY3NO7RAE43"
-        aws_secret_access_key = "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"
-    message_id = pynamodb.attributes.UnicodeAttribute(hash_key=True) ## hash key = True means this is the primary key
-    phone_number = pynamodb.attributes.UnicodeAttribute()
+        table_name = 'User_data_IML_DRP'
+        region = 'us-east-1'
+        aws_access_key_id = AWS_ACCESS_KEY_ID
+        aws_secret_access_key = AWS_SECRET_ACCESS_KEY
+    # hash key = True means this is the primary key
+    message_id = pynamodb.attributes.UnicodeAttribute(hash_key=True)
     incoming_message = pynamodb.attributes.UnicodeAttribute()
     reply = pynamodb.attributes.UnicodeAttribute()
+
+class User_threads(Model):
+    class Meta:
+        table_name = 'thread_data_IML_DRP'
+        region = 'us-east-1'
+        aws_access_key_id = AWS_ACCESS_KEY_ID
+        aws_secret_access_key = AWS_SECRET_ACCESS_KEY
+    phone_number = pynamodb.attributes.UnicodeAttribute(hash_key=True)
     thread_ID = pynamodb.attributes.UnicodeAttribute()
 
 with open('assistant.json') as f:
@@ -69,9 +77,20 @@ def send_msg(msg, number):
         'https://graph.facebook.com/v18.0/220890917766697/messages', headers=headers, json=json_data)
     # print("\nResponse object\n", response.text)
 
+def handle_thread_id(phone_number):
+    try:
+        thread_id = User_threads.get(phone_number).thread_ID
+        print(f"Thread ID: {thread_id} retrieved for {phone_number}")
+        return thread_id
+    except User_threads.DoesNotExist:
+        thread_id = client.beta.threads.create().id
+        User_threads(phone_number=phone_number, thread_ID=thread_id).save()
+        print(f"Thread ID: {thread_id} created for {phone_number}")
+        return thread_id
+
 def process_user_input(thread_id_client, user_input):
-    
-    client.beta.threads.messages.create(thread_id=thread_id_client, role="user",
+    client.beta.threads.messages.create(thread_id=thread_id_client,
+                                        role="user",
                                         content=user_input)
     run = client.beta.threads.runs.create(thread_id=thread_id_client,
                                           assistant_id=assistant_id)
@@ -104,9 +123,15 @@ def send_msg_with_retry(message, sender_phone, max_retries=8):
 
 def handler():
     while True:
+        # print("In handler ")
         res = res_q.get()
+        # print("Got request ")
+        # print("Got request ")
         sender_phone = res['entry'][0]['changes'][0]['value']['messages'][0]['from']
         send_msg_with_retry("Please wait while I process your request.", sender_phone)
+        send_msg_with_retry("Please wait while I process your request.", sender_phone)
+
+        thread_id_client = handle_thread_id(sender_phone)
         user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
         
         test_vector = vectorizer.transform([user_input])
@@ -120,9 +145,10 @@ def handler():
         print("\nGot message from ", sender_phone)
         print("The message is ", user_input, "\n")
         
-        thread_id_client = client.beta.threads.create()
         run = process_user_input(thread_id_client, user_input)
         
+        
+
         start_time = time.time()
         while time.time() - start_time < 120:
             run_status = get_run_status(thread_id_client, run.id)
@@ -140,7 +166,8 @@ def handler():
             send_msg_with_retry("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
         
         User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'],
-                  incoming_message=user_input, reply=message_content, thread_ID = thread_id_client, phone_number=sender_phone).save()
+                  incoming_message=user_input, reply=message_content).save()
+
 
 my_thread = threading.Thread(target=handler)
 my_thread.daemon = True
@@ -148,7 +175,10 @@ my_thread.start()
 
 @app.route('/webhooks', methods=['POST', 'GET'])
 def webhook():
+    # print("\nRequest object\n", request)
     res = request.get_json()
+
+    # print("\nPayload\n", res)
     try:
         message = res['entry'][0]['changes'][0]['value']['messages'][0]
         msg_type, msg_id, msg_timestamp = message['type'], message['id'], int(message['timestamp'])
@@ -159,11 +189,19 @@ def webhook():
             res_id_list.append(res['entry'][0]['changes']
                                [0]['value']['messages'][0]['id'])
             res_q.put(res)
+            # print("\nRes Queue\n", res_q.queue)
+            # for i in list(res_q.queue):
+            #     print(i)
+            # print("\nRes id list\n", res_id_list)
+
     except KeyError:
+        # print("Key error")
         pass
     return '200 OK HTTPS.'
 
+
 if __name__ == "__main__":
+    # app.run(debug=True, port=5002)
     serve(app, host="0.0.0.0", port=5002)
 
 
