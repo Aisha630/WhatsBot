@@ -1,7 +1,10 @@
+import sys
+sys.path.append("c:\\users\\waleed arshad\\appdata\\local\\programs\\python\\python312\\lib\\site-packages")
+sys.path.append("c:\\users\\waleed arshad\\appdata\\local\\programs\\python\\python312\\lib\\site-packages\\decouple\\__init__.py")
 from flask import Flask, request
 import requests
 from openai import OpenAI
-from decouple import config
+# from decouple import config
 import time
 import json
 import pynamodb
@@ -9,14 +12,23 @@ from pynamodb.models import Model
 import threading
 import queue
 from waitress import serve
+from dotenv import load_dotenv
+import os
+from joblib import load
 
+# Load environment variables from .env file
+load_dotenv()
 
-OPENAI_API_KEY = config('OPENAI_API_KEY')
-WHATSAPP_TOKEN = config('WHATSAPP_PERMANENT_ACCESS_TOKEN')
-AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
+# Access the environment variables
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+WHATSAPP_TOKEN = os.getenv('WHATSAPP_PERMANENT_ACCESS_TOKEN')
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+
 res_q = queue.Queue()
 res_id_list = []
+model = load('./model.joblib')
+vectorizer = load('./vectorizer.joblib')
 
 class User_data(Model):
     class Meta:
@@ -63,7 +75,7 @@ def send_msg(msg, number):
     # Sending the POST request to the WhatsApp API endpoint. The /messages endpoint is used to send messages to the user
     response = requests.post(
         'https://graph.facebook.com/v18.0/220890917766697/messages', headers=headers, json=json_data)
-    print("\nResponse object\n", response.text)
+    # print("\nResponse object\n", response.text)
 
 def handle_thread_id(phone_number):
     try:
@@ -97,15 +109,43 @@ def clean_message_content(message_content):
         message_content.value = message_content.value.replace(annotation.text, '')
     return message_content.value
 
+
+def send_msg_with_retry(message, sender_phone, max_retries=8):
+    for attempt in range(1, max_retries + 1):
+        try:
+            send_msg(message, sender_phone)
+            break  # If successful, exit the loop
+        except requests.exceptions.ConnectionError as e:
+            print(f"Retry attempt {attempt}/{max_retries} - Connection error: {e}")
+            time.sleep(5)  # Wait for a few seconds before retrying
+    else:
+        print("Max retries exceeded. Unable to send the message.")
+
 def handler():
     while True:
+        # print("In handler ")
         res = res_q.get()
+        # print("Got request ")
         sender_phone = res['entry'][0]['changes'][0]['value']['messages'][0]['from']
-        send_msg("Please wait while I process your request.", sender_phone)
+        send_msg_with_retry("Please wait while I process your request.", sender_phone)
 
         thread_id_client = handle_thread_id(sender_phone)
         user_input = res['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
+        
+        test_vector = vectorizer.transform([user_input])
+        prediction = model.predict(test_vector)
+        
+        if (prediction[0] == 0):
+            user_input = "Answer in English. " + user_input
+        else:
+            user_input = "Answer in Roman Urdu. " + user_input
+            
+        print("\nGot message from ", sender_phone)
+        print("The message is ", user_input, "\n")
+        
         run = process_user_input(thread_id_client, user_input)
+        
+        
 
         start_time = time.time()
         while time.time() - start_time < 120:
@@ -114,14 +154,14 @@ def handler():
                 messages = client.beta.threads.messages.list(thread_id=thread_id_client)
                 message_content = clean_message_content(messages.data[0].content[0].text)
                 print("Run completed, returning response to ", sender_phone)
-                print("Response:", message_content)
-                send_msg(message_content, sender_phone)
+                print("\nResponse:", message_content)
+                send_msg_with_retry(message_content, sender_phone)
                 break
             time.sleep(1)
 
         if run_status.status != 'completed':
             print("Run timed out")
-            send_msg("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
+            send_msg_with_retry("Sorry, I'm having trouble understanding you. Please try again.", sender_phone)
         
         User_data(message_id=res['entry'][0]['changes'][0]['value']['messages'][0]['id'],
                   incoming_message=user_input, reply=message_content).save()
@@ -133,10 +173,10 @@ my_thread.start()
 
 @app.route('/webhooks', methods=['POST', 'GET'])
 def webhook():
-    print("\nRequest object\n", request)
+    # print("\nRequest object\n", request)
     res = request.get_json()
 
-    print("\nPayload\n", res)
+    # print("\nPayload\n", res)
     try:
         message = res['entry'][0]['changes'][0]['value']['messages'][0]
         msg_type, msg_id, msg_timestamp = message['type'], message['id'], int(message['timestamp'])
@@ -153,7 +193,7 @@ def webhook():
             # print("\nRes id list\n", res_id_list)
 
     except KeyError:
-        print("Key error")
+        # print("Key error")
         pass
     return '200 OK HTTPS.'
 
