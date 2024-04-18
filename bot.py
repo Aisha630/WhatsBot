@@ -126,7 +126,9 @@ def handler():
         # print("In handler ")
         res = res_q.get()
         # print("Got request ")
+        # print("Got request ")
         sender_phone = res['entry'][0]['changes'][0]['value']['messages'][0]['from']
+        send_msg_with_retry("Please wait while I process your request.", sender_phone)
         send_msg_with_retry("Please wait while I process your request.", sender_phone)
 
         thread_id_client = handle_thread_id(sender_phone)
