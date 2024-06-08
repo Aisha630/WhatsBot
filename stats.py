@@ -39,8 +39,6 @@ for item in ThreadDataSixHours.scan(attributes_to_get=["phone_number"]):
     else:
         message_count[item.phone_number] += 1
         
-
-
     
 # Calculate the count of unique users across both tables
 unique_users_count = len(thread_data_phone_numbers.union(thread_less_data_phone_numbers).union(thread_six_hours_data_phone_numbers))

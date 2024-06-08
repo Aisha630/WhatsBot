@@ -6,10 +6,10 @@ from joblib import dump
 from sklearn.metrics import classification_report, accuracy_score
 import pandas as pd
 
-with open("./english.txt", "r") as file:
+with open("./data/english.txt", "r") as file:
     lines = file.readlines()
     english_sentences = [line.rstrip("\n") for line in lines]
-with open("./roman_urdu.txt", "r") as file:
+with open("./data/roman_urdu.txt", "r") as file:
     lines = file.readlines()
     urdu_sentences = [line.rstrip("\n") for line in lines]
     

@@ -1,5 +1,5 @@
-/assistant.json
-/knowledge.pdf
-/test.py
-/__pycache__/
-/.env
+.env
+.vscode
+.DS_Store
+data/
+assistant.json

@@ -1,0 +1,11 @@
+pytz
+datetime
+joblib
+python-dotenv
+Flask
+pymongo
+openai
+requests
+waitress
+scikit-learn
+pandas
